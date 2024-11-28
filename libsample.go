@@ -10,7 +10,7 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-func ConnectToQUICServer(address string) error {
+func Connect(address string) (quic.Connection, error) {
 	// TLS設定。証明書の検証をスキップ（テスト環境用）。
 	tlsConfig := &tls.Config{InsecureSkipVerify: true}
 
@@ -20,21 +20,28 @@ func ConnectToQUICServer(address string) error {
 	// QUICサーバーに接続
 	connection, err := quic.DialAddr(ctx, address, tlsConfig, nil) // nilはデフォルトのQUIC設定を指定
 	if err != nil {
-		return fmt.Errorf("failed to dial server at %s: %v", address, err)
+		return nil, fmt.Errorf("failed to dial server at %s: %v", address, err)
 	}
-	defer connection.CloseWithError(0, "client closing") // 接続をクリーンに閉じる
+
+	log.Println("Connected to server:", address)
+	return connection, nil
+}
+
+func SendMessage(conn quic.Connection, message string) (string, error) {
+	// コンテキストを作成
+	ctx := context.Background()
 
 	// ストリームをオープン
-	stream, err := connection.OpenStreamSync(ctx) // コンテキストを渡してストリームを開く
+	stream, err := conn.OpenStreamSync(ctx) // コンテキストを渡してストリームを開く
 	if err != nil {
-		return fmt.Errorf("failed to open stream: %v", err)
+		return "", fmt.Errorf("failed to open stream: %v", err)
 	}
+	defer stream.Close() // ストリームをクリーンに閉じる
 
 	// サーバーにメッセージを送信
-	message := "Hello, QUIC server!"
 	_, err = stream.Write([]byte(message))
 	if err != nil {
-		return fmt.Errorf("failed to write message: %v", err)
+		return "", fmt.Errorf("failed to write message: %v", err)
 	}
 	log.Println("Client sent:", message)
 
@@ -45,10 +52,22 @@ func ConnectToQUICServer(address string) error {
 		if err == io.EOF {
 			log.Println("Server closed the stream")
 		} else {
-			return fmt.Errorf("failed to read response: %v", err)
+			return "", fmt.Errorf("failed to read response: %v", err)
 		}
 	}
-	log.Println("Client received:", string(buffer[:n]))
 
+	response := string(buffer[:n])
+	log.Println("Client received:", response)
+	return response, nil
+}
+
+// Disconnect は指定された接続を切断します。
+func Disconnect(conn quic.Connection) error {
+	err := conn.CloseWithError(0, "client closing") // 接続をクリーンに閉じる
+	if err != nil {
+		return fmt.Errorf("failed to close connection: %v", err)
+	}
+
+	log.Println("Disconnected from server")
 	return nil
 }
