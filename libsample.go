@@ -40,9 +40,13 @@ func StartQUICServer(address, certFile, keyFile string) error {
 			// 接続終了時にエラーコード 0 と理由 "connection closed" を使って接続を終了する
 			defer conn.CloseWithError(0, "connection closed")
 
-			err := Accept(conn, "Message received successfully")
-			if err != nil {
-				log.Printf("error handling connection: %v", err)
+			// メッセージを複数回受け取るループ
+			for {
+				err := Accept(conn, "Message received successfully")
+				if err != nil {
+					log.Printf("error handling connection: %v", err)
+					break // メッセージの受信中にエラーがあれば接続を終了
+				}
 			}
 		}(connection)
 	}
@@ -63,19 +67,22 @@ func Accept(connection quic.Connection, responseMessage string) error {
 		return fmt.Errorf("failed to read from stream: %v", err)
 	}
 
-	// 空のメッセージでもない限り処理
-	if n > 0 {
-		message := string(buffer[:n])
-		log.Println("Server received:", message)
-
-		// クライアントへ応答を送信
-		_, err = stream.Write([]byte(responseMessage))
-		if err != nil {
-			return fmt.Errorf("failed to write to stream: %v", err)
-		}
-
-		log.Println("Server sent:", responseMessage)
+	if err == io.EOF {
+		// クライアントがストリームを閉じた場合、終了
+		log.Println("Client closed the stream.")
+		return nil
 	}
+
+	message := string(buffer[:n])
+	log.Println("Server received:", message)
+
+	// クライアントへ応答を送信
+	_, err = stream.Write([]byte(responseMessage))
+	if err != nil {
+		return fmt.Errorf("failed to write to stream: %v", err)
+	}
+
+	log.Println("Server sent:", responseMessage)
 
 	// エラーなし
 	return nil
