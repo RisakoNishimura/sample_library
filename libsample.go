@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -76,16 +78,32 @@ func Accept(connection quic.Connection, responseMessage string) error {
 	message := string(buffer[:n])
 	log.Println("Server received:", message)
 
-	// クライアントへ応答を送信
-	_, err = stream.Write([]byte(responseMessage))
-	if err != nil {
-		return fmt.Errorf("failed to write to stream: %v", err)
+	// タイマーを使って、メッセージの送信が10秒以内に行われなかった場合にサーバーを停止する
+	timeoutDuration := 10 * time.Second
+	timeout := time.NewTimer(timeoutDuration)
+
+	// メッセージ送信の処理を別ゴルーチンで実行
+	go func() {
+		// クライアントへ応答を送信
+		_, err := stream.Write([]byte(responseMessage))
+		if err != nil {
+			log.Printf("failed to write to stream: %v", err)
+		} else {
+			log.Println("Server sent:", responseMessage)
+		}
+		timeout.Stop() // 応答を送信したらタイマーを停止
+	}()
+
+	// タイムアウトを監視する
+	select {
+	case <-timeout.C:
+		// タイムアウトした場合、エラーメッセージを表示してサーバーを停止
+		log.Println("No message sent for 10 seconds. Stopping server.")
+		// サーバーを停止するために必要な処理をここに追加（例: プロセスを終了）
+		os.Exit(1) // サーバーを停止
+		return nil
 	}
 
-	log.Println("Server sent:", responseMessage)
-
-	// エラーなし
-	return nil
 }
 
 // クライアントがサーバーに接続する(証明書はスキップ)
