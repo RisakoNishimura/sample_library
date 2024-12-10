@@ -67,30 +67,40 @@ func ConnectToServer(address string) (quic.Connection, error) {
 	return conn, nil
 }
 
-// OpenStream はQUICコネクションに対してストリームを開きます。
-func OpenStream(conn quic.Connection) (quic.Stream, error) {
+// SendMessage は指定された接続のストリームにメッセージを書き込む関数です。
+func SendMessage(conn quic.Connection, message string) error {
+	// ストリームを開く
 	stream, err := conn.OpenStreamSync(context.Background())
 	if err != nil {
-		return nil, fmt.Errorf("failed to open stream: %w", err)
+		return fmt.Errorf("failed to open stream: %w", err)
 	}
 
-	log.Println("Stream successfully opened")
-	return stream, nil
-}
-
-// WriteToStream は指定されたストリームにメッセージを書き込みます。
-func WriteToStream(stream quic.Stream, message string) error {
-	_, err := stream.Write([]byte(message))
+	// メッセージを送信
+	_, err = stream.Write([]byte(message))
 	if err != nil {
 		return fmt.Errorf("failed to write to stream: %w", err)
 	}
 
-	log.Printf("Message sent: %s", message)
+	log.Printf("Sent message: %s", message)
+
+	// ストリームを閉じる
+	err = stream.Close()
+	if err != nil {
+		log.Printf("Failed to close stream: %v", err)
+	}
+
 	return nil
 }
 
-// ReadFromStream は指定されたストリームからメッセージを読み取ります。
-func ReadFromStream(stream quic.Stream) (string, error) {
+// ReceiveMessage は指定された接続のストリームからメッセージを受信する関数です。
+func ReceiveMessage(conn quic.Connection) (string, error) {
+	// ストリームを受け入れる
+	stream, err := conn.AcceptStream(context.Background())
+	if err != nil {
+		return "", fmt.Errorf("failed to accept stream: %w", err)
+	}
+
+	// ストリームからデータを読み取る
 	var builder strings.Builder
 	buffer := make([]byte, 1024)
 
@@ -99,15 +109,22 @@ func ReadFromStream(stream quic.Stream) (string, error) {
 		if err != nil && err != io.EOF {
 			return "", fmt.Errorf("failed to read from stream: %w", err)
 		}
-
 		builder.Write(buffer[:n])
+
 		if err == io.EOF {
 			break
 		}
 	}
 
 	message := builder.String()
-	log.Printf("Message received: %s", message)
+	log.Printf("Received message: %s", message)
+
+	// ストリームを閉じる
+	err = stream.Close()
+	if err != nil {
+		log.Printf("Failed to close stream: %v", err)
+	}
+
 	return message, nil
 }
 
