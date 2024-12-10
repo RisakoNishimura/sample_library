@@ -1,172 +1,144 @@
 package sample_library
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"time"
+	"strings"
 
 	"github.com/quic-go/quic-go"
 )
 
-// QUICサーバーの待ち受けを開始する
-func StartQUICServer(address, certFile, keyFile string) error {
+// StartServer はQUICサーバーを起動し、リスナーを返します。
+func StartServer(address, certFile, keyFile string) (*quic.Listener, error) {
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return fmt.Errorf("failed to load server certificate: %v", err)
+		return nil, fmt.Errorf("failed to load server certificate: %w", err)
 	}
 
-	tlsConfig := &tls.Config{Certificates: []tls.Certificate{cert}}
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13, // 最低TLSバージョンをTLS1.3に設定
+	}
 
 	listener, err := quic.ListenAddr(address, tlsConfig, nil)
 	if err != nil {
-		return fmt.Errorf("failed to listen on address %s: %v", address, err)
+		return nil, fmt.Errorf("failed to listen on address %s: %w", address, err)
 	}
-	defer listener.Close()
 
-	log.Println("QUIC server listening on", address)
+	log.Printf("QUIC server started and listening on %s", address)
+	return listener, nil
+}
 
-	// クライアントからの接続を待ち受け
+// StopServer はQUICサーバーを停止し、リスナーを閉じます。
+func StopServer(listener *quic.Listener) error {
+	// リスナーがnilでないことを確認
+	if listener == nil {
+		return fmt.Errorf("listener is nil, cannot stop server")
+	}
+
+	// リスナーを閉じる
+	err := (*listener).Close()
+	if err != nil {
+		return fmt.Errorf("failed to stop server: %w", err)
+	}
+
+	log.Println("QUIC server stopped")
+	return nil
+}
+
+// ConnectToServer は指定されたアドレスにQUIC接続を行います。
+func ConnectToServer(address string) (quic.Connection, error) {
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: true, // テスト用。運用では信頼済み証明書を使用
+		MinVersion:         tls.VersionTLS13,
+	}
+
+	conn, err := quic.DialAddr(context.Background(), address, tlsConfig, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to server at %s: %w", address, err)
+	}
+
+	log.Printf("Connected to server at %s", address)
+	return conn, nil
+}
+
+// OpenStream はQUICコネクションに対してストリームを開きます。
+func OpenStream(conn quic.Connection) (quic.Stream, error) {
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to open stream: %w", err)
+	}
+
+	log.Println("Stream successfully opened")
+	return stream, nil
+}
+
+// WriteToStream は指定されたストリームにメッセージを書き込みます。
+func WriteToStream(stream quic.Stream, message string) error {
+	_, err := stream.Write([]byte(message))
+	if err != nil {
+		return fmt.Errorf("failed to write to stream: %w", err)
+	}
+
+	log.Printf("Message sent: %s", message)
+	return nil
+}
+
+// ReadFromStream は指定されたストリームからメッセージを読み取ります。
+func ReadFromStream(stream quic.Stream) (string, error) {
+	var builder strings.Builder
+	buffer := make([]byte, 1024)
+
 	for {
-		connection, err := listener.Accept(context.Background())
-		if err != nil {
-			log.Printf("failed to accept connection: %v", err)
-			continue
+		n, err := stream.Read(buffer)
+		if err != nil && err != io.EOF {
+			return "", fmt.Errorf("failed to read from stream: %w", err)
 		}
 
-		// 接続を処理する
-		go func(conn quic.Connection) {
-			// 接続終了時にエラーコード 0 と理由 "connection closed" を使って接続を終了する
-			defer conn.CloseWithError(0, "connection closed")
-
-			// メッセージを複数回受け取るループ
-			for {
-				err := Accept(conn, "Message received successfully")
-				if err != nil {
-					log.Printf("error handling connection: %v", err)
-					break // メッセージの受信中にエラーがあれば接続を終了
-				}
-			}
-		}(connection)
-	}
-}
-
-// クライアントからのメッセージを受け取り、応答を送信する
-func Accept(connection quic.Connection, responseMessage string) error {
-	// ストリームを受け入れる
-	stream, err := connection.AcceptStream(context.Background())
-	if err != nil {
-		return fmt.Errorf("failed to accept stream: %v", err)
-	}
-
-	// メッセージを受信する
-	buffer := make([]byte, 1024)
-	n, err := stream.Read(buffer)
-	if err != nil && err != io.EOF {
-		return fmt.Errorf("failed to read from stream: %v", err)
-	}
-
-	if err == io.EOF {
-		// クライアントがストリームを閉じた場合、終了
-		log.Println("Client closed the stream.")
-		return nil
-	}
-
-	message := string(buffer[:n])
-	log.Println("Server received:", message)
-
-	// タイマーを使って、メッセージの送信が10秒以内に行われなかった場合にサーバーを停止する
-	timeoutDuration := 10 * time.Second
-	timeout := time.NewTimer(timeoutDuration)
-
-	// メッセージ送信の処理を別ゴルーチンで実行
-	go func() {
-		// クライアントへ応答を送信
-		_, err := stream.Write([]byte(responseMessage))
-		if err != nil {
-			log.Printf("failed to write to stream: %v", err)
-		} else {
-			log.Println("Server sent:", responseMessage)
-		}
-		timeout.Stop() // 応答を送信したらタイマーを停止
-	}()
-
-	// タイムアウトを監視する
-	select {
-	case <-timeout.C:
-		// タイムアウトした場合、エラーメッセージを表示してサーバーを停止
-		log.Println("No message sent for 10 seconds. Stopping server.")
-		// サーバーを停止するために必要な処理をここに追加（例: プロセスを終了）
-		os.Exit(1) // サーバーを停止
-		return nil
-	}
-
-}
-
-// クライアントがサーバーに接続する(証明書はスキップ)
-func Connect(address string) (quic.Connection, error) {
-	// TLS設定。証明書の検証をスキップ（テスト環境用）。
-	tlsConfig := &tls.Config{InsecureSkipVerify: true}
-
-	// コンテキストを作成
-	ctx := context.Background()
-
-	// QUICサーバーに接続
-	connection, err := quic.DialAddr(ctx, address, tlsConfig, nil) // nilはデフォルトのQUIC設定を指定
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial server at %s: %v", address, err)
-	}
-
-	log.Println("Connected to server:", address)
-	return connection, nil
-}
-
-// クライアントがサーバーにメッセージを送信する
-func SendMessage(conn quic.Connection, message string) (string, error) {
-	// コンテキストを作成
-	ctx := context.Background()
-
-	// ストリームをオープン
-	stream, err := conn.OpenStreamSync(ctx) // コンテキストを渡してストリームを開く
-	if err != nil {
-		return "", fmt.Errorf("failed to open stream: %v", err)
-	}
-	defer stream.Close() // ストリームをクリーンに閉じる
-
-	// サーバーにメッセージを送信
-	_, err = stream.Write([]byte(message))
-	if err != nil {
-		return "", fmt.Errorf("failed to write message: %v", err)
-	}
-	log.Println("Client sent:", message)
-
-	// サーバーからのレスポンスを受信
-	buffer := make([]byte, 1024)
-	n, err := stream.Read(buffer)
-	if err != nil {
+		builder.Write(buffer[:n])
 		if err == io.EOF {
-			log.Println("Server closed the stream")
-		} else {
-			return "", fmt.Errorf("failed to read response: %v", err)
+			break
 		}
 	}
 
-	response := string(buffer[:n])
-	log.Println("Client received:", response)
-	return response, nil
+	message := builder.String()
+	log.Printf("Message received: %s", message)
+	return message, nil
 }
 
-// Disconnect は指定された接続を切断します。
-func Disconnect(conn quic.Connection) error {
-	// エラーコード 0 とメッセージ "client closing" で接続を閉じる
-	err := conn.CloseWithError(0, "client closing")
+// GetMessageFromInput はキーボード入力からメッセージを取得し、そのまま返します。
+func GetMessageFromInput() (string, error) {
+	reader := bufio.NewReader(os.Stdin)
+
+	fmt.Print("Enter your message: ") // 固定プロンプト
+
+	// ユーザーの入力を取得
+	input, err := reader.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("failed to close connection: %v", err)
+		return "", fmt.Errorf("failed to read input: %w", err)
 	}
 
-	log.Println("Disconnected from server")
+	// 入力のトリミング（前後の空白や改行を削除）
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return "", fmt.Errorf("input cannot be empty")
+	}
+
+	return input, nil
+}
+
+// CloseServer はQUICサーバーを閉じます。
+func CloseServer(listener quic.Listener) error {
+	err := listener.Close()
+	if err != nil {
+		return fmt.Errorf("failed to close server: %w", err)
+	}
+
+	log.Println("QUIC server closed successfully")
 	return nil
 }
